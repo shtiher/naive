@@ -1,0 +1,12 @@
+{
+	"luci-app-naive-switch": {
+		"description": "Переключение podkop между серверами naive",
+		"read": {
+			"file": {
+				"/usr/bin/naive-switch": [ "exec" ],
+				"/usr/bin/naive-switch *": [ "exec" ]
+			},
+			"ubus": { "file": [ "exec" ] }
+		}
+	}
+}

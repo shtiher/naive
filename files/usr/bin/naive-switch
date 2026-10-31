@@ -1,0 +1,70 @@
+#!/bin/sh
+# Переключение podkop между двумя экземплярами naive.
+#   naive-switch 1|2        — направить podkop в сервер 1 (socks 1080, config.json) или 2 (socks 1081, config2.json)
+#   naive-switch status     — какой сейчас активен и работают ли оба
+#   naive-switch test       — то же, что status
+#   naive-switch restart    — перезапустить сервис naiveproxy и проверить связь
+#   naive-switch get 1|2    — вывести строку proxy из конфига сервера
+#   naive-switch set 1|2 URL — записать новую строку proxy (https://user:pass@host:port),
+#                             старый конфиг сохраняется в *.prev, naiveproxy перезапускается
+
+port_of() { case "$1" in 1) echo 1080;; 2) echo 1081;; esac; }
+conf_of() { case "$1" in 1) echo /etc/naiveproxy/config.json;; 2) echo /etc/naiveproxy/config2.json;; esac; }
+num_of()  { case "$1" in 1080) echo 1;; 1081) echo 2;; esac; }
+proxy_of() { jsonfilter -i "$(conf_of $1)" -e '@.proxy' 2>/dev/null; }
+host_of() { proxy_of $1 | sed -e 's#^[a-z+]*://##' -e 's#^.*@##' -e 's#[:/].*$##'; }
+name_of() { n=$(num_of "$1"); [ -n "$n" ] && echo "$n ($(host_of $n))" || echo "неизвестно: $1"; }
+
+check() {
+    ip=$(curl -s --max-time 6 --socks5-hostname 127.0.0.1:$1 https://api.ipify.org)
+    [ -n "$ip" ] && echo "работает, внешний IP $ip" || echo "НЕ ОТВЕЧАЕТ"
+}
+
+status() {
+    cur=$(uci -q get podkop.main.proxy_string | sed -n "s#.*:\([0-9]*\)\$#\1#p")
+    echo "podkop сейчас использует: $(name_of $cur)"
+    echo "  1080 $(host_of 1): $(check 1080)"
+    echo "  1081 $(host_of 2): $(check 1081)"
+}
+
+case "$1" in
+    1|2)
+        p=$(port_of "$1")
+        uci set podkop.main.proxy_string="socks5://127.0.0.1:$p"
+        uci commit podkop
+        /etc/init.d/podkop restart >/dev/null 2>&1
+        echo "переключено на $(name_of $p)"
+        echo "  проверка: $(check $p)"
+        ;;
+    get)
+        case "$2" in 1|2) proxy_of "$2" ;; *) echo "использование: naive-switch get 1|2"; exit 1 ;; esac
+        ;;
+    set)
+        case "$2" in 1|2) ;; *) echo "использование: naive-switch set 1|2 URL"; exit 1 ;; esac
+        # naive+https://user:pass@host:443#имя -> https://user:pass@host:443
+        url=$(printf '%s' "$3" | tr -d ' \t\r\n' | sed -e 's#^naive+##' -e 's|[?#].*$||' -e 's|/$||')
+        if ! printf '%s' "$url" | grep -Eq '^(https|quic)://[^"\\@/]+@[^"\\@/]+$'; then
+            echo "Ошибка: нужна строка вида https://логин:пароль@хост:443"
+            exit 1
+        fi
+        conf=$(conf_of "$2")
+        listen=$(jsonfilter -i "$conf" -e '@.listen' 2>/dev/null)
+        [ -n "$listen" ] || listen="socks://127.0.0.1:$(port_of $2)"
+        cp -p "$conf" "$conf.prev" 2>/dev/null
+        umask 077
+        printf '{\n  "listen": "%s",\n  "proxy": "%s"\n}\n' "$listen" "$url" > "$conf.tmp" && mv "$conf.tmp" "$conf"
+        echo "конфиг сервера $2 обновлён ($(host_of $2)), прежний сохранён в $conf.prev"
+        /etc/init.d/naiveproxy restart
+        sleep 3
+        echo "  проверка: $(check $(port_of $2))"
+        ;;
+    restart)
+        /etc/init.d/naiveproxy restart
+        sleep 3
+        echo "naiveproxy перезапущен"
+        status ;;
+    status|test|"")
+        status ;;
+    *)
+        echo "использование: naive-switch 1|2|status|restart|get 1|2|set 1|2 URL"; exit 1 ;;
+esac
