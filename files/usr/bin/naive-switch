@@ -7,6 +7,7 @@
 #   naive-switch get 1|2    — вывести строку proxy из конфига сервера
 #   naive-switch set 1|2 URL — записать новую строку proxy (https://user:pass@host:port),
 #                             старый конфиг сохраняется в *.prev, naiveproxy перезапускается
+#   naive-switch write 1|2 URL — то же без перезапуска (для установщика)
 
 port_of() { case "$1" in 1) echo 1080;; 2) echo 1081;; esac; }
 conf_of() { case "$1" in 1) echo /etc/naiveproxy/config.json;; 2) echo /etc/naiveproxy/config2.json;; esac; }
@@ -39,8 +40,8 @@ case "$1" in
     get)
         case "$2" in 1|2) proxy_of "$2" ;; *) echo "использование: naive-switch get 1|2"; exit 1 ;; esac
         ;;
-    set)
-        case "$2" in 1|2) ;; *) echo "использование: naive-switch set 1|2 URL"; exit 1 ;; esac
+    set|write)
+        case "$2" in 1|2) ;; *) echo "использование: naive-switch $1 1|2 URL"; exit 1 ;; esac
         # naive+https://user:pass@host:443#имя -> https://user:pass@host:443
         url=$(printf '%s' "$3" | tr -d ' \t\r\n' | sed -e 's#^naive+##' -e 's|[?#].*$||' -e 's|/$||')
         if ! printf '%s' "$url" | grep -Eq '^(https|quic)://[^"\\@/]+@[^"\\@/]+$'; then
@@ -54,6 +55,7 @@ case "$1" in
         umask 077
         printf '{\n  "listen": "%s",\n  "proxy": "%s"\n}\n' "$listen" "$url" > "$conf.tmp" && mv "$conf.tmp" "$conf"
         echo "конфиг сервера $2 обновлён ($(host_of $2)), прежний сохранён в $conf.prev"
+        [ "$1" = write ] && exit 0
         /etc/init.d/naiveproxy restart
         sleep 3
         echo "  проверка: $(check $(port_of $2))"
@@ -66,5 +68,5 @@ case "$1" in
     status|test|"")
         status ;;
     *)
-        echo "использование: naive-switch 1|2|status|restart|get 1|2|set 1|2 URL"; exit 1 ;;
+        echo "использование: naive-switch 1|2|status|restart|get 1|2|set 1|2 URL|write 1|2 URL"; exit 1 ;;
 esac
