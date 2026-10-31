@@ -57,8 +57,11 @@ install_naive() {
     bin=$(find "$TMP/naive" -type f -name naive | head -n1)
     [ -n "$bin" ] && chmod 755 "$bin" && "$bin" --version >/dev/null 2>&1 || die "скачанный naive не запускается на этом роутере"
 
-    /etc/init.d/naiveproxy stop 2>/dev/null
-    cp "$bin" /usr/bin/naive.new && mv /usr/bin/naive.new /usr/bin/naive || die "не удалось записать /usr/bin/naive"
+    # podkop может вести github.com через naive — останавливаем его только на время замены
+    cp "$bin" /usr/bin/naive.new || die "не удалось записать /usr/bin/naive"
+    /etc/init.d/naiveproxy stop 2>/dev/null || true
+    mv /usr/bin/naive.new /usr/bin/naive
+    if [ -x /etc/init.d/naiveproxy ]; then /etc/init.d/naiveproxy start; sleep 3; fi
     echo "Установлен $(/usr/bin/naive --version)"
 }
 
@@ -68,6 +71,16 @@ trap 'rm -rf "$TMP"' EXIT
 
 command -v curl >/dev/null || { echo "Ставлю curl…"; pkg_install curl >/dev/null; }
 
+# Файлы naive-switch: из соседнего каталога files/ (если запущено из клона) или с GitHub.
+# Качаем до установки naive: пока он перезапускается, GitHub через podkop может быть недоступен.
+src=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/files
+if [ ! -d "$src/usr/bin" ]; then
+    echo "Скачиваю $REPO…"
+    fetch "https://codeload.github.com/$REPO/tar.gz/refs/heads/main" "$TMP/repo.tar.gz" || die "не удалось скачать $REPO"
+    tar xzf "$TMP/repo.tar.gz" -C "$TMP"
+    src=$(ls -d "$TMP"/naive-*/files)
+fi
+
 # 1. naive
 if [ -x /usr/bin/naive ]; then
     cur=$(/usr/bin/naive --version 2>/dev/null)
@@ -76,14 +89,6 @@ else
     yes_no "Установить naive (последний релиз с GitHub)?" y && install_naive
 fi
 
-# Файлы naive-switch: из соседнего каталога files/ (если запущено из клона) или с GitHub
-src=$(cd "$(dirname "$0")" 2>/dev/null && pwd)/files
-if [ ! -d "$src/usr/bin" ]; then
-    echo "Скачиваю $REPO…"
-    fetch "https://codeload.github.com/$REPO/tar.gz/refs/heads/main" "$TMP/repo.tar.gz"
-    tar xzf "$TMP/repo.tar.gz" -C "$TMP"
-    src=$(ls -d "$TMP"/naive-*/files)
-fi
 (cd "$src" && tar cf - usr www etc/init.d etc/naiveproxy/*.example) | tar xf - -C /
 chmod 755 /usr/bin/naive-switch /usr/bin/naive-watchdog.sh /etc/init.d/naiveproxy
 echo "Скрипты и страница LuCI установлены"
