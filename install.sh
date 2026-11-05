@@ -6,7 +6,7 @@
 REPO=shtiher/naive
 NAIVE_REPO=klzgrad/naiveproxy
 TMP=/tmp/naive-install
-SYSUPGRADE_PATHS="/usr/bin/naive /usr/bin/naive-switch /usr/bin/naive-failover /etc/init.d/naiveproxy /etc/naiveproxy/
+SYSUPGRADE_PATHS="/usr/bin/naive /usr/bin/naive-switch /usr/bin/naive-failover /usr/bin/naive-ha /etc/init.d/naiveproxy /etc/naiveproxy/
 /usr/share/luci/menu.d/luci-app-naive-switch.json /usr/share/rpcd/acl.d/luci-app-naive-switch.json
 /www/luci-static/resources/view/naive-switch/"
 
@@ -90,7 +90,7 @@ else
 fi
 
 (cd "$src" && tar cf - usr www etc/init.d etc/naiveproxy/*.example) | tar xf - -C /
-chmod 755 /usr/bin/naive-switch /usr/bin/naive-failover /etc/init.d/naiveproxy
+chmod 755 /usr/bin/naive-switch /usr/bin/naive-failover /usr/bin/naive-ha /etc/init.d/naiveproxy
 # Старые версии: watchdog заменён naive-failover, страница servers.js/main.js — naive.js
 rm -f /usr/bin/naive-watchdog.sh /www/luci-static/resources/view/naive-switch/servers.js /www/luci-static/resources/view/naive-switch/main.js
 sed -i '\#^/usr/bin/naive-watchdog.sh$#d' /etc/sysupgrade.conf

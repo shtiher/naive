@@ -1,0 +1,36 @@
+#!/bin/sh
+# Команды для Home Assistant. Ключ HA в /etc/dropbear/authorized_keys привязан к этому
+# скрипту (command="/usr/bin/naive-ha",...), поэтому по SSH доступны только:
+#   status   — статус naive-failover в JSON
+#   vpn on   — включить VPN: автоматика включается, podkop сразу идёт через рабочий
+#              сервер (1 в приоритете, иначе 2)
+#   vpn off  — выключить VPN: podkop.main напрямую, автоматика выключается
+cmd="${SSH_ORIGINAL_COMMAND:-$*}"
+
+refresh() { ( /usr/bin/naive-failover >/dev/null 2>&1 & ) ; }
+up() { [ "$(curl -s -m 10 -x "socks5h://127.0.0.1:$1" -o /dev/null -w '%{http_code}' https://www.google.com/generate_204)" = 204 ]; }
+
+case "$cmd" in
+    status)
+        /usr/bin/naive-failover json
+        ;;
+    "vpn on")
+        rm -f /etc/naiveproxy/failover.off
+        if up 1080; then /usr/bin/naive-switch 1 auto >/dev/null 2>&1; r=1
+        elif up 1081; then /usr/bin/naive-switch 2 auto >/dev/null 2>&1; r=2
+        else r=none; fi
+        logger -t naive-ha "VPN включён из Home Assistant (сервер: $r)"
+        refresh
+        echo "{\"ok\":true,\"server\":\"$r\"}"
+        ;;
+    "vpn off")
+        /usr/bin/naive-switch direct >/dev/null 2>&1
+        logger -t naive-ha "VPN выключен из Home Assistant (podkop напрямую)"
+        refresh
+        echo '{"ok":true}'
+        ;;
+    *)
+        echo '{"ok":false,"error":"разрешены только: status, vpn on, vpn off"}'
+        exit 1
+        ;;
+esac

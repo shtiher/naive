@@ -1,0 +1,84 @@
+# VPN на роутере (naive + podkop): статус и выключатель.
+# HA ходит на роутер по SSH ключом /config/.ssh/router_naive. На роутере этот ключ
+# привязан к /usr/bin/naive-ha — разрешены только команды status, "vpn on", "vpn off".
+vpn:
+  command_line:
+    - sensor:
+        name: VPN status
+        unique_id: naive_vpn_status
+        command: >-
+          ssh -i /config/.ssh/router_naive -o BatchMode=yes -o ConnectTimeout=5
+          -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/config/.ssh/known_hosts
+          root@192.168.1.1 status
+        value_template: >-
+          {% set m = value_json.mode | default('') %}
+          {{ {'1': 'Сервер 1', '2': 'Сервер 2', 'direct': 'Напрямую'}.get(m, m or 'нет данных') }}
+        json_attributes:
+          - time
+          - internet
+          - server1
+          - server2
+          - mode
+          - auto
+          - vpn_enabled
+          - podkop_ok
+          - vpn_internet
+          - health
+          - last_event
+        scan_interval: 60
+        command_timeout: 20
+
+  shell_command:
+    vpn_on: >-
+      ssh -i /config/.ssh/router_naive -o BatchMode=yes -o ConnectTimeout=5
+      -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/config/.ssh/known_hosts
+      root@192.168.1.1 "vpn on"
+    vpn_off: >-
+      ssh -i /config/.ssh/router_naive -o BatchMode=yes -o ConnectTimeout=5
+      -o StrictHostKeyChecking=accept-new -o UserKnownHostsFile=/config/.ssh/known_hosts
+      root@192.168.1.1 "vpn off"
+
+  template:
+    - binary_sensor:
+        - name: VPN сервер 1
+          unique_id: naive_vpn_server1
+          device_class: connectivity
+          icon: mdi:server-network
+          availability: "{{ state_attr('sensor.vpn_status', 'server1') is not none }}"
+          state: "{{ state_attr('sensor.vpn_status', 'server1') }}"
+        - name: VPN сервер 2
+          unique_id: naive_vpn_server2
+          device_class: connectivity
+          icon: mdi:server-network
+          availability: "{{ state_attr('sensor.vpn_status', 'server2') is not none }}"
+          state: "{{ state_attr('sensor.vpn_status', 'server2') }}"
+        - name: Интернет
+          unique_id: naive_internet
+          device_class: connectivity
+          icon: mdi:web
+          availability: "{{ state_attr('sensor.vpn_status', 'internet') is not none }}"
+          state: "{{ state_attr('sensor.vpn_status', 'internet') }}"
+        - name: Интернет через VPN
+          unique_id: naive_vpn_internet
+          device_class: connectivity
+          icon: mdi:vpn
+          availability: "{{ state_attr('sensor.vpn_status', 'vpn_internet') is not none }}"
+          state: "{{ state_attr('sensor.vpn_status', 'vpn_internet') }}"
+    - switch:
+        - name: VPN
+          unique_id: naive_vpn_switch
+          icon: mdi:vpn
+          availability: "{{ state_attr('sensor.vpn_status', 'vpn_enabled') is not none }}"
+          state: "{{ state_attr('sensor.vpn_status', 'vpn_enabled') }}"
+          turn_on:
+            - action: shell_command.vpn_on
+            - delay: "00:00:20"
+            - action: homeassistant.update_entity
+              target:
+                entity_id: sensor.vpn_status
+          turn_off:
+            - action: shell_command.vpn_off
+            - delay: "00:00:20"
+            - action: homeassistant.update_entity
+              target:
+                entity_id: sensor.vpn_status

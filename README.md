@@ -28,7 +28,15 @@ podkop отправляет трафик в тот SOCKS, который зап�
   - нет интернета совсем (ya.ru, 77.88.8.8, 1.1.1.1) — ничего не меняет;
   - оба сервера не отвечают — сначала перезапускает naiveproxy (не чаще раза в 15 мин);
   - naive отвечает, а трафик не идёт через sing-box (проверка `main-out` через clash API `:9090`), DNS не отдаёт fakeip или нет таблицы nft — перезапускает podkop (не чаще раза в 10 мин);
-  - статус: `/tmp/naive-failover/status`, история: `/tmp/naive-failover/history`, события — в `logread -e naive-failover`.
+  - при выключенной автоматике (`naive-switch auto off`) только проверяет и пишет статус, ничего не переключает и не перезапускает;
+  - статус: `/tmp/naive-failover/status`, JSON: `naive-failover json` (`/tmp/naive-failover/state.json`), история: `/tmp/naive-failover/history`, события — в `logread -e naive-failover`.
+- `files/usr/bin/naive-ha` — команды для Home Assistant по SSH. Ключ HA добавляется в `/etc/dropbear/authorized_keys` с привязкой к скрипту, поэтому им можно выполнить только `status` (JSON), `vpn on` (включить автоматику и сразу уйти на рабочий сервер) и `vpn off` (podkop напрямую, автоматика выключена):
+
+  ```
+  command="/usr/bin/naive-ha",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA… homeassistant
+  ```
+
+  Пример пакета для HA (датчик статуса, датчики серверов и интернета, выключатель VPN) — `homeassistant/vpn.yaml`.
 - LuCI-страница **Службы → Naive**: статус, строки подключения обоих серверов с кнопкой «Сохранить и перезапустить», переключение podkop.
 
 ## Установка

@@ -13,6 +13,7 @@
 # Управление: naive-switch auto on|off. Ручной naive-switch 1|2|direct выключает автоматику.
 #   naive-failover          — один проход (для cron)
 #   naive-failover status   — последний статус
+#   naive-failover json     — последний статус в JSON (/tmp/naive-failover/state.json)
 
 FLAG_OFF=/etc/naiveproxy/failover.off
 STATE=/tmp/naive-failover
@@ -26,6 +27,10 @@ FAKEIP_DOMAIN="telegram.org"   # домен из списков podkop: в ре�
 
 mkdir -p "$STATE"
 
+if [ "$1" = json ]; then
+    cat "$STATE/state.json" 2>/dev/null || echo '{}'
+    exit 0
+fi
 if [ "$1" = status ]; then
     cat "$STATE/status" 2>/dev/null || echo "нет данных (ещё не запускался)"
     [ -f "$FLAG_OFF" ] && echo "Автоматика ВЫКЛЮЧЕНА (naive-switch auto on — включить)"
@@ -105,20 +110,32 @@ podkop_problem() {
     echo "трафик через sing-box (main-out) не проходит"
 }
 
+b() { [ "$1" = 1 ] && echo true || echo false; }
+
 write_status() {
+    AUTO=$([ -f "$FLAG_OFF" ] && echo 0 || echo 1)
     {
         echo "Проверено: $(date '+%d.%m.%Y %H:%M:%S')"
         echo "Интернет: $NET"
         echo "Сервер 1: $S1    Сервер 2: $S2"
         echo "podkop сейчас: $(current_mode_name "$MODE")"
         echo "podkop/sing-box: ${HEALTH:-не проверялся}"
-        [ -f "$FLAG_OFF" ] && echo "Автоматика: ВЫКЛЮЧЕНА" || echo "Автоматика: включена"
+        echo "Интернет через VPN: $([ "$VPN_NET" = 1 ] && echo есть || echo нет)"
+        [ "$AUTO" = 0 ] && echo "Автоматика: ВЫКЛЮЧЕНА (только проверки)" || echo "Автоматика: включена"
         echo "Последние события:"
         tail -n 5 "$STATE/history" 2>/dev/null | sed 's/^/  /'
     } > "$STATE/status.tmp" && mv "$STATE/status.tmp" "$STATE/status"
+    # Машиночитаемый статус (для Home Assistant: naive-ha status)
+    last=$(tail -n 1 "$STATE/history" 2>/dev/null | sed 's/["\\]//g')
+    printf '{"time":"%s","internet":%s,"server1":%s,"server2":%s,"mode":"%s","auto":%s,"vpn_enabled":%s,"podkop_ok":%s,"vpn_internet":%s,"health":"%s","last_event":"%s"}\n' \
+        "$(date -Iseconds)" "$(b "$NET_OK")" "$(b "$OK1")" "$(b "$OK2")" "$MODE" "$(b "$AUTO")" \
+        "$( { [ "$AUTO" = 1 ] || [ "$MODE" = 1 ] || [ "$MODE" = 2 ]; } && echo true || echo false)" \
+        "$(b "$PODKOP_OK")" "$(b "$VPN_NET")" "$(echo "$HEALTH" | sed 's/["\\]//g')" "$last" \
+        > "$STATE/state.json.tmp" && mv "$STATE/state.json.tmp" "$STATE/state.json"
 }
 
-[ -f "$FLAG_OFF" ] && { MODE=$(current_mode); NET="-"; S1="-"; S2="-"; HEALTH="автоматика выключена"; write_status; exit 0; }
+AUTO_ON=$([ -f "$FLAG_OFF" ] && echo 0 || echo 1)   # 0 — только проверки, ничего не переключаем
+NET_OK=0; OK1=0; OK2=0; PODKOP_OK=0; VPN_NET=0
 
 MODE=$(current_mode)
 if ! internet_ok; then
@@ -129,7 +146,7 @@ if ! internet_ok; then
 fi
 [ "$(cnt_get no_internet)" = 1 ] && log "интернет появился"
 cnt_set no_internet 0
-NET="есть"
+NET="есть"; NET_OK=1
 
 [ "$MODE" = other ] && { S1="-"; S2="-"; HEALTH="podkop.main смотрит не на локальный naive — не управляю"; write_status; exit 0; }
 
@@ -140,7 +157,7 @@ check_servers() {
 check_servers
 
 # Оба мертвы при живом интернете: сначала пробуем перезапустить naiveproxy
-if [ $OK1 = 0 ] && [ $OK2 = 0 ] && cooldown_ok last_naive_restart $NAIVE_COOLDOWN; then
+if [ $AUTO_ON = 1 ] && [ $OK1 = 0 ] && [ $OK2 = 0 ] && cooldown_ok last_naive_restart $NAIVE_COOLDOWN; then
     log "оба сервера не отвечают, перезапускаю naiveproxy"
     /etc/init.d/naiveproxy restart >/dev/null 2>&1
     cnt_set last_naive_restart "$(now)"
@@ -171,22 +188,25 @@ case "$MODE" in
         fi ;;
 esac
 
-if [ "$WANT" != "$MODE" ]; then
+if [ $AUTO_ON = 1 ] && [ "$WANT" != "$MODE" ]; then
     apply_mode "$WANT" "$REASON"
     HEALTH="podkop перезапущен при переключении, проверю на следующем проходе"
     write_status; exit 0
 fi
 
-# Режим не менялся — проверяем podkop/sing-box (в режиме proxy только если сам naive жив)
+# Проверка podkop/sing-box (в режиме proxy только если сам naive жив)
 if [ "$MODE" = direct ] || { [ "$MODE" = 1 ] && [ $OK1 = 1 ]; } || { [ "$MODE" = 2 ] && [ $OK2 = 1 ]; }; then
     PROBLEM=$(podkop_problem)
     if [ -z "$PROBLEM" ]; then
-        HEALTH="в порядке"
+        HEALTH="в порядке"; PODKOP_OK=1
+        [ "$MODE" != direct ] && VPN_NET=1
         cnt_set podkop_fail 0
     else
         HEALTH="ПРОБЛЕМА: $PROBLEM"
         cnt_set podkop_fail $(( $(cnt_get podkop_fail) + 1 ))
-        if cooldown_ok last_podkop_restart $PODKOP_COOLDOWN; then
+        if [ $AUTO_ON = 0 ]; then
+            HEALTH="$HEALTH; автоматика выключена — не чиню"
+        elif cooldown_ok last_podkop_restart $PODKOP_COOLDOWN; then
             log "$PROBLEM — перезапускаю podkop"
             /etc/init.d/podkop restart >/dev/null 2>&1
             cnt_set last_podkop_restart "$(now)"
@@ -195,6 +215,8 @@ if [ "$MODE" = direct ] || { [ "$MODE" = 1 ] && [ $OK1 = 1 ]; } || { [ "$MODE" =
             HEALTH="$HEALTH; перезапуск podkop был недавно, жду"
         fi
     fi
+else
+    HEALTH="активный сервер не отвечает"
 fi
 
 write_status
