@@ -2,7 +2,7 @@
 	"admin/services/naive-switch": {
 		"title": "Naive",
 		"order": 90,
-		"action": { "type": "view", "path": "naive-switch/main" },
+		"action": { "type": "view", "path": "naive-switch/naive" },
 		"depends": { "acl": [ "luci-app-naive-switch" ] }
 	}
 }

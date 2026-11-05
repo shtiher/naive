@@ -51,5 +51,5 @@ sh -c "$(wget -qO- https://raw.githubusercontent.com/shtiher/naive/main/install.
 
 ## Заметки
 
-- Chrome кэширует файлы LuCI-страниц по версии LuCI (`?v=…`). Если после изменения `main.js` (раньше `servers.js`) браузер показывает старую страницу, переименуйте файл и поправьте `path` в `menu.d`.
+- Chrome кэширует файлы LuCI-страниц по версии LuCI (`?v=…`). Если после изменения `naive.js` (раньше `servers.js`, `main.js`) браузер показывает старую страницу, переименуйте файл и поправьте `path` в `menu.d`.
 - podkop работает только с IPv4: IPv6-трафик устройств идёт мимо прокси.

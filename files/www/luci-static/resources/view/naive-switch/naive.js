@@ -79,7 +79,7 @@ return view.extend({
 	serverSection: function(n, url) {
 		var self = this;
 		var input = E('input', {
-			'type': 'password', 'class': 'cbi-input-text', 'value': url,
+			'type': 'text', 'class': 'cbi-input-text', 'value': url,
 			'style': 'width:100%;font-family:monospace', 'autocomplete': 'off', 'spellcheck': 'false',
 			'placeholder': 'https://логин:пароль@хост:443'
 		});
@@ -92,12 +92,7 @@ return view.extend({
 			E('div', { 'class': 'cbi-value' }, [
 				E('label', { 'class': 'cbi-value-title' }, 'Строка proxy'),
 				E('div', { 'class': 'cbi-value-field' }, [
-					E('div', { 'style': 'display:flex;gap:.5em' }, [
-						input,
-						E('button', { 'class': 'cbi-button', 'click': function() {
-							input.type = (input.type == 'password') ? 'text' : 'password';
-						} }, 'Показать')
-					]),
+					input,
 					E('div', { 'class': 'cbi-value-description' },
 						'Можно вставить ссылку naive+https://…#имя — префикс и имя отбросятся. Прежний конфиг сохраняется в ' +
 						(n == 1 ? 'config.json.prev' : 'config2.json.prev') + '.')

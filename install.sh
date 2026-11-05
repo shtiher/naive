@@ -91,8 +91,8 @@ fi
 
 (cd "$src" && tar cf - usr www etc/init.d etc/naiveproxy/*.example) | tar xf - -C /
 chmod 755 /usr/bin/naive-switch /usr/bin/naive-failover /etc/init.d/naiveproxy
-# Старые версии: watchdog заменён naive-failover, страница servers.js — main.js
-rm -f /usr/bin/naive-watchdog.sh /www/luci-static/resources/view/naive-switch/servers.js
+# Старые версии: watchdog заменён naive-failover, страница servers.js/main.js — naive.js
+rm -f /usr/bin/naive-watchdog.sh /www/luci-static/resources/view/naive-switch/servers.js /www/luci-static/resources/view/naive-switch/main.js
 sed -i '\#^/usr/bin/naive-watchdog.sh$#d' /etc/sysupgrade.conf
 echo "Скрипты и страница LuCI установлены"
 
