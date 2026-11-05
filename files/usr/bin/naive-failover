@@ -1,0 +1,200 @@
+#!/bin/sh
+# naive-failover — автоматический выбор сервера naive для podkop и контроль podkop/sing-box.
+# Запускается cron'ом раз в минуту (см. install.sh).
+#
+# Правила:
+#   * сервер 1 в приоритете, при его отказе — сервер 2;
+#   * отказали оба — podkop.main переводится в exclusion: трафик из списков идёт напрямую;
+#   * сервер снова жив NEED_OK проверок подряд — podkop возвращается на него (1 приоритетнее 2);
+#   * интернета нет совсем — ничего не трогаем;
+#   * naive работает, а через sing-box (main-out) трафик не идёт, или сломан DNS/nft podkop —
+#     перезапускаем podkop (не чаще раза в PODKOP_COOLDOWN секунд).
+#
+# Управление: naive-switch auto on|off. Ручной naive-switch 1|2|direct выключает автоматику.
+#   naive-failover          — один проход (для cron)
+#   naive-failover status   — последний статус
+
+FLAG_OFF=/etc/naiveproxy/failover.off
+STATE=/tmp/naive-failover
+TEST_URL="https://www.google.com/generate_204"
+# clash API sing-box: podkop вешает его на LAN-адрес (experimental.clash_api.external_controller)
+CLASH_API="http://$(jsonfilter -i /etc/sing-box/config.json -e '@.experimental.clash_api.external_controller' 2>/dev/null || echo 192.168.1.1:9090)"
+NEED_OK=2                 # проверок подряд, чтобы вернуться на сервер / уйти из direct
+NAIVE_COOLDOWN=900        # не чаще раза в 15 мин перезапускать naiveproxy
+PODKOP_COOLDOWN=600       # не чаще раза в 10 мин перезапускать podkop
+FAKEIP_DOMAIN="telegram.org"   # домен из списков podkop: в режиме proxy должен резолвиться в 198.18.x
+
+mkdir -p "$STATE"
+
+if [ "$1" = status ]; then
+    cat "$STATE/status" 2>/dev/null || echo "нет данных (ещё не запускался)"
+    [ -f "$FLAG_OFF" ] && echo "Автоматика ВЫКЛЮЧЕНА (naive-switch auto on — включить)"
+    exit 0
+fi
+
+# Не запускаться параллельно (переключение podkop может длиться дольше минуты)
+exec 9>"$STATE/lock"
+flock -n 9 || exit 0
+
+log() { logger -t naive-failover "$*"; echo "$(date '+%d.%m %H:%M:%S') $*" >> "$STATE/history"; tail -n 50 "$STATE/history" > "$STATE/history.tmp" && mv "$STATE/history.tmp" "$STATE/history"; }
+now() { date +%s; }
+cnt_get() { cat "$STATE/$1" 2>/dev/null || echo 0; }
+cnt_set() { echo "$2" > "$STATE/$1"; }
+cooldown_ok() { # cooldown_ok имя секунд
+    last=$(cnt_get "$1"); [ $(( $(now) - last )) -ge "$2" ]
+}
+
+internet_ok() {
+    # Прямые проверки с роутера (его собственный трафик podkop не трогает)
+    [ "$(curl -s -m 6 -o /dev/null -w '%{http_code}' https://ya.ru)" != 000 ] && return 0
+    ping -c 1 -W 3 77.88.8.8 >/dev/null 2>&1 && return 0
+    ping -c 1 -W 3 1.1.1.1 >/dev/null 2>&1
+}
+
+naive_ok() { # naive_ok порт — две попытки
+    for i in 1 2; do
+        [ "$(curl -s -m 10 -x "socks5h://127.0.0.1:$1" -o /dev/null -w '%{http_code}' "$TEST_URL")" = 204 ] && return 0
+        [ $i = 1 ] && sleep 5
+    done
+    return 1
+}
+
+current_mode() { # 1 | 2 | direct | other
+    if [ "$(uci -q get podkop.main.connection_type)" = exclusion ]; then echo direct; return; fi
+    case "$(uci -q get podkop.main.proxy_string)" in
+        *127.0.0.1:1080) echo 1 ;;
+        *127.0.0.1:1081) echo 2 ;;
+        *) echo other ;;
+    esac
+}
+
+apply_mode() { # apply_mode 1|2|direct причина
+    case "$1" in
+        1|2)
+            uci set podkop.main.connection_type=proxy
+            uci set podkop.main.proxy_config_type=url
+            uci set podkop.main.proxy_string="socks5://127.0.0.1:$([ "$1" = 1 ] && echo 1080 || echo 1081)"
+            ;;
+        direct)
+            uci set podkop.main.connection_type=exclusion
+            ;;
+    esac
+    uci commit podkop
+    log "переключение: $(current_mode_name "$MODE") -> $(current_mode_name "$1") ($2)"
+    /etc/init.d/podkop restart >/dev/null 2>&1
+    cnt_set last_podkop_restart "$(now)"
+    MODE=$1
+}
+
+current_mode_name() { case "$1" in 1) echo "сервер 1";; 2) echo "сервер 2";; direct) echo "напрямую";; *) echo "$1";; esac; }
+
+# Здоровье podkop/sing-box. Пустой вывод — всё в порядке, иначе — описание проблемы.
+podkop_problem() {
+    pgrep -f "sing-box run" >/dev/null || { echo "sing-box не запущен"; return; }
+    nft list table inet PodkopTable >/dev/null 2>&1 || { echo "нет таблицы nft PodkopTable"; return; }
+    [ "$MODE" = direct ] && return
+    # DNS: домен из списка должен получать fakeip
+    nslookup "$FAKEIP_DOMAIN" 127.0.0.1 2>/dev/null | grep -q 'Address.*198\.1[89]\.' \
+        || { echo "DNS не отдаёт fakeip для $FAKEIP_DOMAIN"; return; }
+    # Трафик через sing-box -> naive (две попытки)
+    for i in 1 2; do
+        curl -s -m 12 "$CLASH_API/proxies/main-out/delay?url=https%3A%2F%2Fwww.google.com%2Fgenerate_204&timeout=8000" \
+            | grep -q '"delay"' && return
+        [ $i = 1 ] && sleep 5
+    done
+    echo "трафик через sing-box (main-out) не проходит"
+}
+
+write_status() {
+    {
+        echo "Проверено: $(date '+%d.%m.%Y %H:%M:%S')"
+        echo "Интернет: $NET"
+        echo "Сервер 1: $S1    Сервер 2: $S2"
+        echo "podkop сейчас: $(current_mode_name "$MODE")"
+        echo "podkop/sing-box: ${HEALTH:-не проверялся}"
+        [ -f "$FLAG_OFF" ] && echo "Автоматика: ВЫКЛЮЧЕНА" || echo "Автоматика: включена"
+        echo "Последние события:"
+        tail -n 5 "$STATE/history" 2>/dev/null | sed 's/^/  /'
+    } > "$STATE/status.tmp" && mv "$STATE/status.tmp" "$STATE/status"
+}
+
+[ -f "$FLAG_OFF" ] && { MODE=$(current_mode); NET="-"; S1="-"; S2="-"; HEALTH="автоматика выключена"; write_status; exit 0; }
+
+MODE=$(current_mode)
+if ! internet_ok; then
+    NET="нет — ничего не трогаю"; S1="-"; S2="-"; HEALTH="-"
+    [ "$(cnt_get no_internet)" = 0 ] && log "интернета нет, жду"
+    cnt_set no_internet 1
+    write_status; exit 0
+fi
+[ "$(cnt_get no_internet)" = 1 ] && log "интернет появился"
+cnt_set no_internet 0
+NET="есть"
+
+[ "$MODE" = other ] && { S1="-"; S2="-"; HEALTH="podkop.main смотрит не на локальный naive — не управляю"; write_status; exit 0; }
+
+check_servers() {
+    if naive_ok 1080; then OK1=1; cnt_set ok1 $(( $(cnt_get ok1) + 1 )); else OK1=0; cnt_set ok1 0; fi
+    if naive_ok 1081; then OK2=1; cnt_set ok2 $(( $(cnt_get ok2) + 1 )); else OK2=0; cnt_set ok2 0; fi
+}
+check_servers
+
+# Оба мертвы при живом интернете: сначала пробуем перезапустить naiveproxy
+if [ $OK1 = 0 ] && [ $OK2 = 0 ] && cooldown_ok last_naive_restart $NAIVE_COOLDOWN; then
+    log "оба сервера не отвечают, перезапускаю naiveproxy"
+    /etc/init.d/naiveproxy restart >/dev/null 2>&1
+    cnt_set last_naive_restart "$(now)"
+    sleep 5
+    check_servers
+fi
+
+S1=$([ $OK1 = 1 ] && echo "работает" || echo "НЕ ОТВЕЧАЕТ")
+S2=$([ $OK2 = 1 ] && echo "работает" || echo "НЕ ОТВЕЧАЕТ")
+STABLE1=$([ "$(cnt_get ok1)" -ge $NEED_OK ] && echo 1 || echo 0)
+STABLE2=$([ "$(cnt_get ok2)" -ge $NEED_OK ] && echo 1 || echo 0)
+
+# Выбор режима
+WANT=$MODE
+case "$MODE" in
+    1)
+        if [ $OK1 = 0 ]; then
+            if [ $OK2 = 1 ]; then WANT=2; REASON="сервер 1 не отвечает"; else WANT=direct; REASON="оба сервера не отвечают"; fi
+        fi ;;
+    2)
+        if [ $STABLE1 = 1 ]; then WANT=1; REASON="сервер 1 снова работает"
+        elif [ $OK2 = 0 ]; then
+            if [ $OK1 = 1 ]; then WANT=1; REASON="сервер 2 не отвечает"; else WANT=direct; REASON="оба сервера не отвечают"; fi
+        fi ;;
+    direct)
+        if [ $STABLE1 = 1 ]; then WANT=1; REASON="сервер 1 снова работает"
+        elif [ $STABLE2 = 1 ]; then WANT=2; REASON="сервер 2 снова работает"
+        fi ;;
+esac
+
+if [ "$WANT" != "$MODE" ]; then
+    apply_mode "$WANT" "$REASON"
+    HEALTH="podkop перезапущен при переключении, проверю на следующем проходе"
+    write_status; exit 0
+fi
+
+# Режим не менялся — проверяем podkop/sing-box (в режиме proxy только если сам naive жив)
+if [ "$MODE" = direct ] || { [ "$MODE" = 1 ] && [ $OK1 = 1 ]; } || { [ "$MODE" = 2 ] && [ $OK2 = 1 ]; }; then
+    PROBLEM=$(podkop_problem)
+    if [ -z "$PROBLEM" ]; then
+        HEALTH="в порядке"
+        cnt_set podkop_fail 0
+    else
+        HEALTH="ПРОБЛЕМА: $PROBLEM"
+        cnt_set podkop_fail $(( $(cnt_get podkop_fail) + 1 ))
+        if cooldown_ok last_podkop_restart $PODKOP_COOLDOWN; then
+            log "$PROBLEM — перезапускаю podkop"
+            /etc/init.d/podkop restart >/dev/null 2>&1
+            cnt_set last_podkop_restart "$(now)"
+            HEALTH="$HEALTH; podkop перезапущен"
+        else
+            HEALTH="$HEALTH; перезапуск podkop был недавно, жду"
+        fi
+    fi
+fi
+
+write_status

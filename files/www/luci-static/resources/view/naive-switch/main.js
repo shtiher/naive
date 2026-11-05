@@ -17,7 +17,19 @@ function hostOf(url) {
 
 return view.extend({
 	load: function() {
-		return Promise.all([ run('status'), run([ 'get', '1' ]), run([ 'get', '2' ]) ]);
+		return Promise.all([ run('status'), run([ 'get', '1' ]), run([ 'get', '2' ]), run('auto') ]);
+	},
+
+	setAuto: function(on) {
+		this.busy('Автоматика…', on ? 'Включаю автоматический выбор сервера' : 'Выключаю автоматику');
+		return run([ 'auto', on ? 'on' : 'off' ]).then(L.bind(this.refresh, this));
+	},
+
+	goDirect: function() {
+		if (!confirm('Пустить трафик podkop напрямую, без naive? Автоматика при этом выключится.'))
+			return;
+		this.busy('Переключение…', 'Перевожу podkop.main в режим «напрямую»');
+		return run('direct').then(L.bind(this.refresh, this));
 	},
 
 	busy: function(title, text) {
@@ -53,8 +65,9 @@ return view.extend({
 
 	refresh: function() {
 		this.out.textContent = 'Проверяю…';
-		return Promise.all([ run('status'), run([ 'get', '1' ]), run([ 'get', '2' ]) ]).then(L.bind(function(r) {
+		return Promise.all([ run('status'), run([ 'get', '1' ]), run([ 'get', '2' ]), run('auto') ]).then(L.bind(function(r) {
 			this.out.textContent = r[0];
+			this.autoOut.textContent = r[3];
 			for (var n = 1; n <= 2; n++) {
 				this.inputs[n].value = r[n].trim();
 				this.labels[n].textContent = 'Сервер ' + n + ': ' + hostOf(r[n].trim());
@@ -104,6 +117,7 @@ return view.extend({
 		this.inputs = {};
 		this.labels = {};
 		this.out = E('pre', { 'style': 'white-space:pre-wrap' }, data[0]);
+		this.autoOut = E('pre', { 'style': 'white-space:pre-wrap' }, data[3]);
 
 		return E('div', { 'class': 'cbi-map' }, [
 			E('h2', {}, 'Naive'),
@@ -116,6 +130,20 @@ return view.extend({
 					E('button', { 'class': 'cbi-button', 'click': function() { return self.refresh(); } }, 'Обновить статус'), ' ',
 					E('button', { 'class': 'cbi-button cbi-button-reset', 'click': function() { return self.restartNaive(); } },
 						'Перезапустить naive')
+				])
+			]),
+			E('div', { 'class': 'cbi-section' }, [
+				E('h3', {}, 'Автоматика (naive-failover, проверка раз в минуту)'),
+				E('div', { 'class': 'cbi-section-descr' },
+					'Сервер 1 в приоритете, при отказе — сервер 2, если отказали оба — трафик podkop идёт напрямую. ' +
+					'Сервер снова заработал — podkop возвращается на него. Нет интернета — ничего не меняется. ' +
+					'Если naive работает, а трафик через podkop/sing-box не идёт — podkop перезапускается. ' +
+					'Ручное переключение выключает автоматику.'),
+				this.autoOut,
+				E('div', { 'class': 'right' }, [
+					E('button', { 'class': 'cbi-button cbi-button-apply', 'click': function() { return self.setAuto(true); } }, 'Включить автоматику'), ' ',
+					E('button', { 'class': 'cbi-button', 'click': function() { return self.setAuto(false); } }, 'Выключить автоматику'), ' ',
+					E('button', { 'class': 'cbi-button cbi-button-negative', 'click': function() { return self.goDirect(); } }, 'Напрямую (без naive)')
 				])
 			]),
 			this.serverSection(1, data[1].trim()),

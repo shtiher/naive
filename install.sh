@@ -6,7 +6,7 @@
 REPO=shtiher/naive
 NAIVE_REPO=klzgrad/naiveproxy
 TMP=/tmp/naive-install
-SYSUPGRADE_PATHS="/usr/bin/naive /usr/bin/naive-switch /usr/bin/naive-watchdog.sh /etc/init.d/naiveproxy /etc/naiveproxy/
+SYSUPGRADE_PATHS="/usr/bin/naive /usr/bin/naive-switch /usr/bin/naive-failover /etc/init.d/naiveproxy /etc/naiveproxy/
 /usr/share/luci/menu.d/luci-app-naive-switch.json /usr/share/rpcd/acl.d/luci-app-naive-switch.json
 /www/luci-static/resources/view/naive-switch/"
 
@@ -90,7 +90,10 @@ else
 fi
 
 (cd "$src" && tar cf - usr www etc/init.d etc/naiveproxy/*.example) | tar xf - -C /
-chmod 755 /usr/bin/naive-switch /usr/bin/naive-watchdog.sh /etc/init.d/naiveproxy
+chmod 755 /usr/bin/naive-switch /usr/bin/naive-failover /etc/init.d/naiveproxy
+# Старые версии: watchdog заменён naive-failover, страница servers.js — main.js
+rm -f /usr/bin/naive-watchdog.sh /www/luci-static/resources/view/naive-switch/servers.js
+sed -i '\#^/usr/bin/naive-watchdog.sh$#d' /etc/sysupgrade.conf
 echo "Скрипты и страница LuCI установлены"
 
 # 2. Строки серверов
@@ -112,11 +115,11 @@ for n in 1 2; do
     done
 done
 
-# Автозапуск, watchdog, сохранение при sysupgrade
+# Автозапуск, автоматика (naive-failover), сохранение при sysupgrade
 for p in $SYSUPGRADE_PATHS; do
     grep -qxF "$p" /etc/sysupgrade.conf || echo "$p" >> /etc/sysupgrade.conf
 done
-crontab -l 2>/dev/null | grep -q naive-watchdog || { (crontab -l 2>/dev/null; echo "*/5 * * * * /usr/bin/naive-watchdog.sh") | crontab -; }
+(crontab -l 2>/dev/null | grep -v -e naive-watchdog -e naive-failover; echo "* * * * * /usr/bin/naive-failover") | crontab -
 /etc/init.d/cron restart >/dev/null 2>&1 || true
 rm -rf /tmp/luci-indexcache* /tmp/luci-modulecache
 /etc/init.d/rpcd reload

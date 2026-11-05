@@ -1,6 +1,9 @@
 #!/bin/sh
 # Переключение podkop между двумя экземплярами naive.
 #   naive-switch 1|2        — направить podkop в сервер 1 (socks 1080, config.json) или 2 (socks 1081, config2.json)
+#   naive-switch direct     — трафик podkop.main напрямую (секция в режиме exclusion)
+#                             (ручные 1|2|direct выключают автоматику naive-failover)
+#   naive-switch auto on|off — включить/выключить автоматический выбор сервера (naive-failover)
 #   naive-switch status     — какой сейчас активен и работают ли оба
 #   naive-switch test       — то же, что status
 #   naive-switch restart    — перезапустить сервис naiveproxy и проверить связь
@@ -21,9 +24,16 @@ check() {
     [ -n "$ip" ] && echo "работает, внешний IP $ip" || echo "НЕ ОТВЕЧАЕТ"
 }
 
+FLAG_OFF=/etc/naiveproxy/failover.off
+
 status() {
     cur=$(uci -q get podkop.main.proxy_string | sed -n "s#.*:\([0-9]*\)\$#\1#p")
-    echo "podkop сейчас использует: $(name_of $cur)"
+    if [ "$(uci -q get podkop.main.connection_type)" = exclusion ]; then
+        echo "podkop сейчас: НАПРЯМУЮ (оба сервера были недоступны или выбрано вручную)"
+    else
+        echo "podkop сейчас использует: $(name_of $cur)"
+    fi
+    [ -f "$FLAG_OFF" ] && echo "Автоматика: выключена (ручной режим)" || echo "Автоматика: включена (1 → 2 → напрямую)"
     echo "  1080 $(host_of 1): $(check 1080)"
     echo "  1081 $(host_of 2): $(check 1081)"
 }
@@ -31,11 +41,31 @@ status() {
 case "$1" in
     1|2)
         p=$(port_of "$1")
+        uci set podkop.main.connection_type=proxy
+        uci set podkop.main.proxy_config_type=url
         uci set podkop.main.proxy_string="socks5://127.0.0.1:$p"
         uci commit podkop
+        [ "$2" = auto ] || touch "$FLAG_OFF"
         /etc/init.d/podkop restart >/dev/null 2>&1
         echo "переключено на $(name_of $p)"
         echo "  проверка: $(check $p)"
+        [ -f "$FLAG_OFF" ] && echo "Автоматика выключена — включить: naive-switch auto on"
+        ;;
+    direct)
+        uci set podkop.main.connection_type=exclusion
+        uci commit podkop
+        touch "$FLAG_OFF"
+        /etc/init.d/podkop restart >/dev/null 2>&1
+        echo "podkop.main переведён в режим напрямую (exclusion)"
+        echo "Автоматика выключена — включить: naive-switch auto on"
+        ;;
+    auto)
+        case "$2" in
+            on)  rm -f "$FLAG_OFF"; echo "Автоматика включена, первая проверка — в течение минуты"
+                 /usr/bin/naive-failover >/dev/null 2>&1 & ;;
+            off) touch "$FLAG_OFF"; echo "Автоматика выключена" ;;
+            *)   /usr/bin/naive-failover status ;;
+        esac
         ;;
     get)
         case "$2" in 1|2) proxy_of "$2" ;; *) echo "использование: naive-switch get 1|2"; exit 1 ;; esac
@@ -68,5 +98,5 @@ case "$1" in
     status|test|"")
         status ;;
     *)
-        echo "использование: naive-switch 1|2|status|restart|get 1|2|set 1|2 URL|write 1|2 URL"; exit 1 ;;
+        echo "использование: naive-switch 1|2|direct|status|restart|auto on|off|get 1|2|set 1|2 URL|write 1|2 URL"; exit 1 ;;
 esac
